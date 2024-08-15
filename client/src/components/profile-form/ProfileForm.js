@@ -34,11 +34,17 @@ const ProfileForm = ({
 }) => {
   const [formData, setFormData] = useState(initialState);
 
+  const [avatar, setAvatar] = useState(null);
+
   const creatingProfile = useMatch('/create-profile');
 
   const [displaySocialInputs, toggleSocialInputs] = useState(false);
 
   const navigate = useNavigate();
+
+  const handleFileChange = (event) => {
+    setAvatar(event.target.files[0]);
+  };
 
   useEffect(() => {
     // if there is no profile, attempt to fetch one
@@ -83,7 +89,7 @@ const ProfileForm = ({
 
   const onSubmit = (e) => {
     e.preventDefault();
-    createProfile(formData, navigate, profile ? true : false);
+    createProfile(formData, avatar, navigate, profile ? true : false);
   };
 
   return (
@@ -289,6 +295,9 @@ const ProfileForm = ({
             </div>
           </>
         )}
+
+
+        <input type='file' onChange={handleFileChange} accept="image/*" />
 
         <input type='submit' className='btn btn-primary my-1' />
 

@@ -1,0 +1,773 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  CidrBlockForVPC:
+    Default: 10.0.0.0/20
+    Description: CIDR for cloudstoryVPCdev-book
+    Type: String
+
+  CidrBlockForPublicSubnet1: 
+    Default: 10.0.1.0/24
+    Description: CIDR for public-subnet-1a
+    Type: String
+  
+  CidrBlockForPublicSubnet2: 
+    Default: 10.0.2.0/24
+    Description: CIDR for public-subnet-1b
+    Type: String
+
+  EC2KeyName: 
+    Default: tvd
+    Type: String
+
+  S3BucketName:
+    Type: String
+    Default: dev-book-s3
+
+  AZ1: 
+    Type: String
+    Default: us-east-1a
+
+  AZ2: 
+    Type: String
+    Default: us-east-1b
+
+  CloudWatchConfig:
+    Type: String
+    Default: |
+      {
+        "metrics": {
+          "namespace": "BackendMetrics",
+          "metrics_collected": {
+            "disk": {
+              "measurement": [
+                "used_percent"
+              ],
+              "metrics_collection_interval": 60
+            },
+            "mem": {
+              "measurement": [
+                "mem_used_percent"
+              ],
+              "metrics_collection_interval": 60
+            }
+          }
+        },
+        "logs": {
+          "logs_collected": {
+            "files": {
+              "collect_list": [
+                {
+                  "file_path": "/var/log/messages",
+                  "log_group_name": "EC2InstanceLogGroup",
+                  "log_stream_name": "{instance_id}-messages",
+                  "timezone": "UTC"
+                }
+              ]
+            }
+          }
+        }
+      }
+
+
+
+Resources:
+
+  #S3 Bucket 
+  S3Bucket: 
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  # OAI
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'OAI for ${AWS::StackName}'
+
+
+  # Bucket Policy
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Action: 's3:GetObject'
+            Resource: !Sub '${S3Bucket.Arn}/*'
+
+  # Cloudfront Distribution
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt S3Bucket.RegionalDomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        Enabled: true
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+
+
+  # Storing cloudformation url 
+  CloudFrontURLParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/devbook/cloudfront-url'
+      Type: 'String'
+      Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+      Description: 'CloudFront distribution URL'
+  #VPC
+  devbookVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref CidrBlockForVPC
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: dev-book-vpc
+
+  #Internet-gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: dev-book-igw
+
+  #Attach Intergnet gateway
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref devbookVPC
+
+  #public-subnet-1
+  devbookPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref devbookVPC
+      CidrBlock: !Ref CidrBlockForPublicSubnet1
+      AvailabilityZone: !Ref AZ1
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: dev-book-public-subnet-1a
+
+
+  #public-subnet-2
+  devbookPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref devbookVPC
+      CidrBlock: !Ref CidrBlockForPublicSubnet2
+      AvailabilityZone: !Ref AZ2
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: dev-book-public-subnet-1b
+
+  #private-subnet-1
+  devbookPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref devbookVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Ref AZ1
+      Tags:
+      - Key: Name
+        Value: dev-book-private-subnet-1a
+
+  #private-subnet-2
+  devbookPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref devbookVPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Ref AZ2
+      Tags:
+      - Key: Name
+        Value: dev-book-private-subnet-1b
+
+  DocumentDBSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: DocumentDBSubnetGroup
+      DBSubnetGroupDescription: 2 subnet group for DocumentDB
+      SubnetIds:
+        - !Ref devbookPrivateSubnet1
+        - !Ref devbookPrivateSubnet2
+
+  
+  # security group for launch template - will be attached to ec2 backend 
+  DevBookLaunchTemplateSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: dev-book-launch-template-sg
+      GroupDescription: Security group for DevBook Launch Template
+      VpcId: !Ref devbookVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: dev-book-launch-template-sg
+
+  
+  DocumentDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Document DB
+      VpcId: !Ref devbookVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          SourceSecurityGroupId: !Ref DevBookLaunchTemplateSG 
+
+  # Document DB
+  DocumentDBCluster:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: devbook-docdb
+      MasterUsername: root
+      MasterUserPassword: Admin1234
+      EngineVersion: '5.0'
+      VpcSecurityGroupIds: 
+        - !Ref DocumentDBSecurityGroup
+      DBSubnetGroupName: !Ref DocumentDBSubnetGroup
+      DeletionProtection: false
+
+  DocumentDBInstance:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DocumentDBCluster
+      DBInstanceClass: db.t3.medium
+
+
+
+  
+  #Route table and adding internet gateway for internet access to public subnet
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref devbookVPC 
+      Tags:
+      - Key: Name
+        Value: devbookVPC-public-rt
+
+  #attach subnet-1a to route table
+  SubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref devbookPublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  #attach subnet-b to route table
+  SubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref devbookPublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  #attach intenet gateway to route table
+  PublicInternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+       RouteTableId: !Ref PublicRouteTable
+       DestinationCidrBlock: 0.0.0.0/0
+       GatewayId: !Ref InternetGateway
+
+  
+  #target group
+  DevBookTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: dev-book-target-group
+      Port: 8080
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref devbookVPC 
+      HealthCheckPort: "8080"
+      HealthCheckPath: /api/users
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 20
+      Matcher: 
+        HttpCode: '200'
+      Tags: 
+        - Key: Name
+          Value: dev-book-target-group
+
+  # Securituy group for load balancer 
+  SecurityGroupLoadBalancer: 
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access and HTTP via port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080         
+          CidrIp: 0.0.0.0/0
+      Tags: 
+        - Key: Name
+          Value: devbook-loadbalancer-sg
+      VpcId: !Ref devbookVPC
+
+  # Load balancer backend
+  DevBookNodeLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: dev-book-server-load-balancer
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Type: application
+      SecurityGroups:
+        - !Ref SecurityGroupLoadBalancer
+      Subnets:
+        - !Ref devbookPublicSubnet1
+        - !Ref devbookPublicSubnet2
+      Tags:
+        - Key: Name
+          Value: dev-book-server-load-balancer
+
+
+
+  # attach target group to the load balancer 
+  DevBookLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref DevBookTargetGroup
+      LoadBalancerArn: !Ref DevBookNodeLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+
+  # DocumentDBConnectionStringParameter:
+  #   Type: AWS::SSM::Parameter
+  #   Properties:
+  #     Name: /devbook/documentdb/connection-string
+  #     Type: SecureString
+  #     Value: !Sub |
+  #       mongodb://root:Admin1234@${DocumentDBCluster.Endpoint}:${DocumentDBCluster.Port}/?replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false
+  #     Description: "The connection string for DocumentDB"
+  #     Tier: Standard
+
+
+  AdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: FullAccessRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FullAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AdminRole
+
+  # create launch template for backend EC2 instances
+  DevBookBackendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: 
+      - DocumentDBCluster
+    Properties:
+      LaunchTemplateName: dev-book-backend-launch-template
+      LaunchTemplateData:
+        ImageId: ami-0427090fd1714168b
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        InstanceType: t2.micro
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups: 
+              - !Ref DevBookLaunchTemplateSG
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              yum install -y gcc-c++ make
+              curl -sL https://rpm.nodesource.com/setup_14.x | bash -
+              yum install -y nodejs
+              yum install -y git
+              yum install -y amazon-cloudwatch-agent
+
+              cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+              ${CloudWatchConfig}
+              EOF
+              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+              
+              
+              cd /home/ec2-user
+              git clone REPO
+              cd /home/ec2-user/5411-term-assignment/server/
+
+              wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
+              CLOUDFRONT_URL=$(aws ssm get-parameter --name /devbook/cloudfront-url --query "Parameter.Value" --output text)
+
+              echo mongoURI="mongodb://root:Admin1234@${DocumentDBCluster.Endpoint}:${DocumentDBCluster.Port}/?replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false" >> .env
+              echo "S3_BUCKET_NAME=dev-book-s3" >> .env
+              echo "AWS_REGION=us-east-1" >> .env
+              echo "CLOUDFRONT_URL=$CLOUDFRONT_URL" >> .env
+
+              npm install
+              npm run start
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: dev-book-backend-launch-template
+
+  # creation of auto scaling group 
+  DevBookASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - DevBookBackendLaunchTemplate
+    Properties:
+      AutoScalingGroupName: dev-book-asg
+      VPCZoneIdentifier: 
+        - !Ref devbookPublicSubnet1
+        - !Ref devbookPublicSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref DevBookBackendLaunchTemplate
+        Version: !GetAtt DevBookBackendLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 2
+      DesiredCapacity: 1
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 500
+      TargetGroupARNs:
+        - !Ref DevBookTargetGroup
+      Tags:
+        - Key: Name
+          Value: dev-book-backend
+          PropagateAtLaunch: true
+
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: DevbookWAF
+      Scope: REGIONAL
+      DefaultAction: 
+        Allow: {}
+      VisibilityConfig: 
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: MyBasicWebACLMetric
+      Rules: [] 
+
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    DependsOn: DevBookClientLoadBalancer
+    Properties: 
+      ResourceArn: !GetAtt DevBookClientLoadBalancer.LoadBalancerArn
+      WebACLArn: !GetAtt WebACL.Arn
+
+
+  DevBookLoadbalancerDNS:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: DevBookNodeLoadBalancer
+    Properties:
+      Name: /loadbalancer/dns
+      Description: Loadbalancer DNS
+      SecretString: !GetAtt DevBookNodeLoadBalancer.DNSName
+
+  DevBookClientTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: dev-book-client-target-group
+      Port: 3000
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref devbookVPC 
+      HealthCheckPort: "3000"
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 20
+      Matcher: 
+        HttpCode: '200'
+      Tags: 
+        - Key: Name
+          Value: dev-book-client-target-group
+
+  #Frontend ec2 security group
+  SecurityGroupClient:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Securuty group for cloudstory client"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref devbookVPC
+  
+  # Load balancer backend
+  DevBookClientLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: dev-book-client-load-balancer
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Type: application
+      SecurityGroups:
+        - !Ref SecurityGroupClient
+      Subnets:
+        - !Ref devbookPublicSubnet1
+        - !Ref devbookPublicSubnet2
+      Tags:
+        - Key: Name
+          Value: dev-book-client-load-balancer
+
+  # attach targetgroup and load balancer 
+  DevBookClientLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref DevBookClientTargetGroup
+      LoadBalancerArn: !Ref DevBookClientLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+    # create launch template for Frontend EC2 instances
+  DevBookClientLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn:
+     - DevBookASG
+    Properties:
+      LaunchTemplateName: dev-book-client-launch-template
+      LaunchTemplateData:
+        ImageId: ami-0427090fd1714168b
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        InstanceType: t2.micro
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups: 
+              - !Ref DevBookLaunchTemplateSG
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              sudo su
+              yum update -y
+              yum install -y gcc-c++ make
+              curl -sL https://rpm.nodesource.com/setup_14.x | bash -
+              yum install -y nodejs
+              yum install -y git
+              amazon-linux-extras install nginx1 -y
+              systemctl start nginx
+              systemctl enable nginx
+              cd /home/ec2-user
+
+              git clone REPO
+              cd /home/ec2-user/5411-term-assignment/client/
+
+              echo "REACT_APP_API_URL=http://${DevBookNodeLoadBalancer.DNSName}" > .env
+
+              npm install
+              npm run build
+              npm run start
+
+              # Configure Nginx to serve the React app
+              cat > /etc/nginx/conf.d/react-app.conf << EOL
+              server {
+                listen 80;
+                listen [::]:80;
+                root /home/ec2-user/tdoshi/termassignment/client/build;
+                index index.html;
+                location / {
+                  try_files $uri $uri/ /index.html;
+                }
+              }
+              EOL
+              systemctl restart nginx              
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: dev-book-client-launch-template
+
+  # creation of auto scaling group 
+  DevBookClientASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - DevBookClientLaunchTemplate
+    Properties:
+      AutoScalingGroupName: dev-book-client-asg
+      VPCZoneIdentifier: 
+        - !Ref devbookPublicSubnet1
+        - !Ref devbookPublicSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref DevBookClientLaunchTemplate
+        Version: !GetAtt DevBookClientLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 2
+      DesiredCapacity: 1
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 500
+      TargetGroupARNs:
+        - !Ref DevBookClientTargetGroup
+      Tags:
+        - Key: Name
+          Value: dev-book-client
+          PropagateAtLaunch: true
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties: 
+      RoleName: "s3-role"
+      AssumeRolePolicyDocument: 
+        Version: '2012-10-17'
+        Statement: 
+          - Effect: 'Allow'
+            Principal: 
+              Service: 
+                - 'lambda.amazonaws.com'
+            Action: 
+              - 'sts:AssumeRole'
+      Policies: 
+        - PolicyName: 'S3FullAccessPolicy'
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement: 
+              - Effect: 'Allow'
+                Action: 
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource: 
+                  - 'arn:aws:s3:::dev-book-s3'        
+                  - 'arn:aws:s3:::dev-book-s3/*'
+
+
+  # lambda function 
+  uploadToS3:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: upload-s3
+      Handler: index.handler
+      Runtime: 'nodejs20.x'
+      Timeout: 10
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code: 
+        ZipFile: |
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const path =  require('path');
+
+          const s3 = new S3Client({ region: 'us-east-1' }); 
+          exports.handler = async (event) => {
+              try {
+                  const { fileName, fileContent, mimeType } = event;
+
+                  const bucketName = 'dev-book-s3';
+                  const key = path.basename(fileName);
+
+                  const params = {
+                      Bucket: bucketName,
+                      Key: fileName,
+                      Body: Buffer.from(fileContent, 'base64'), // Assuming the fileContent is base64 encoded
+                      ContentType: mimeType
+                  };
+
+                  const command = new PutObjectCommand(params);
+                  await s3.send(command);
+
+                  return {
+                      statusCode: 200,
+                      body: JSON.stringify({
+                          message: 'File uploaded successfully!',
+                          key: key
+                      })
+                  };
+              } catch (error) {
+                  return {
+                      statusCode: 500,
+                      body: JSON.stringify({
+                          message: 'Failed to upload file',
+                          error: error.message
+                      })
+                  };
+              }
+          };
+
+Outputs:
+  CloudFrontURL:
+    Description: 'URL of the CloudFront distribution'
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+
+  FrontendURL:
+    Description: 'Client URL'
+    Value: !Sub 'https://${DevBookClientLoadBalancer.DNSName}'

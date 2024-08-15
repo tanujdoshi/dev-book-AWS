@@ -89,11 +89,20 @@ export const getGithubRepos = (username) => async (dispatch) => {
 
 // Create or Update a Profile
 export const createProfile =
-  (formData, navigate, edit = false) =>
+  (formData, avatar, navigate, edit = false) =>
   async (dispatch) => {
     try {
       const res = await api.post('/profile', formData);
 
+      if(avatar) {
+        const data = new FormData();
+        data.append("avatar", avatar)
+        await api.post('/profile/avatar', data, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        });
+      }
       dispatch({
         type: GET_PROFILE,
         payload: res.data,
